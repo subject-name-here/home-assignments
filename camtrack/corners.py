@@ -67,6 +67,7 @@ def _build_impl(frame_sequence: pims.FramesSequence,
     image_0 = frame_sequence[0]
     i0 = image_to_uint8(image_0)
 
+
     num_of_pix = frame_sequence.frame_shape[0] * frame_sequence.frame_shape[1]
     gf_params["minDistance"] = int((num_of_pix / max_corners) ** 0.5)
 
