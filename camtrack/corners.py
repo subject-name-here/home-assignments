@@ -36,10 +36,9 @@ class _CornerStorageBuilder:
 
 max_corners = 2000
 block_size = 15
-min_dist = 15
 gf_params = dict(
     qualityLevel=0.1,
-    minDistance=min_dist,
+    minDistance=13,
     blockSize=block_size)
 
 
@@ -50,7 +49,7 @@ def image_to_uint8(image):
 def create_points_mask(image, corners):
     mask = np.full_like(image, 255, dtype=np.uint8)
     for p in corners.points:
-        cv2.circle(mask, (p[0], p[1]), min_dist, 0, -1)
+        cv2.circle(mask, (p[0], p[1]), int(gf_params["minDistance"]), 0, -1)
     return mask
 
 
@@ -67,6 +66,10 @@ def _build_impl(frame_sequence: pims.FramesSequence,
 
     image_0 = frame_sequence[0]
     i0 = image_to_uint8(image_0)
+
+
+    num_of_pix = frame_sequence.frame_shape[0] * frame_sequence.frame_shape[1]
+    gf_params["minDistance"] = int((num_of_pix / max_corners) ** 0.5)
 
     init_corners = cv2.goodFeaturesToTrack(image_0, maxCorners=max_corners, **gf_params)
 
