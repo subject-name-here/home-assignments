@@ -23,17 +23,14 @@ from _camtrack import (
     pose_to_view_mat3x4,
     TriangulationParameters,
     triangulate_correspondences,
-    rodrigues_and_translation_to_view_mat3x4
+    rodrigues_and_translation_to_view_mat3x4,
+    eye3x4,
+    _remove_correspondences_with_ids
 )
 
-# Good for fox_short
-# MAX_REPROJ_ERR = 1
-# MIN_TRIANG_ANGLE = 0.2
-# MIN_DEPTH = 0.01
-
-MAX_REPROJ_ERR = 5
-MIN_TRIANG_ANGLE = 0.01
-MIN_DEPTH = 0.001
+MAX_REPROJ_ERR = 7.9
+MIN_TRIANG_ANGLE = 5.2
+MIN_DEPTH = 0.3
 TRIANG_PARAMS = TriangulationParameters(
     max_reprojection_error=MAX_REPROJ_ERR,
     min_triangulation_angle_deg=MIN_TRIANG_ANGLE,
@@ -59,14 +56,58 @@ def add_points(point_cloud_builder, corner_storage, i, view_mats, intrinsic_mat)
     return cloud_changed
 
 
+def validate(correspondences, e_inliers):
+    _, h_inliers = cv2.findHomography(correspondences.points_1, correspondences.points_2, method=cv2.RANSAC)
+
+    return sum(e_inliers.flatten()) >= sum(h_inliers.flatten())
+
+
+def select_frames(frames, corner_storage, camera_matrix):
+    frame1 = (0, view_mat3x4_to_pose(eye3x4()))
+    frame2 = (-1, view_mat3x4_to_pose(eye3x4()))
+
+    mx = 0
+
+    for i in range(1, len(frames)):
+        correspondences = build_correspondences(corner_storage[frame1[0]], corner_storage[i])
+        if len(correspondences.ids) < 8:
+            continue
+
+        E, mask = cv2.findEssentialMat(
+            correspondences.points_1, correspondences.points_2, camera_matrix,
+            method=cv2.RANSAC
+        )
+
+        if mask is None:
+            continue
+
+        correspondences = _remove_correspondences_with_ids(correspondences, np.argwhere(mask.flatten() == 0))
+        if len(correspondences.ids) < 8 or not validate(correspondences, mask):
+            continue
+
+        R1, R2, t = cv2.decomposeEssentialMat(E)
+        ps = [Pose(R1.T, R1.T @ t), Pose(R2.T, R2.T @ t), Pose(R1.T, R1.T @ (-t)), Pose(R2.T, R2.T @ (-t))]
+
+        for pose in ps:
+            points, _, _ = triangulate_correspondences(
+                correspondences,
+                pose_to_view_mat3x4(frame1[1]), pose_to_view_mat3x4(pose),
+                camera_matrix, TRIANG_PARAMS)
+
+            if len(points) > mx:
+                frame2 = (i, pose)
+                mx = len(points)
+
+    print(frame1[0], frame2[0])
+
+    return frame1, frame2
+
 def track_and_calc_colors(camera_parameters: CameraParameters,
                           corner_storage: CornerStorage,
                           frame_sequence_path: str,
                           known_view_1: Optional[Tuple[int, Pose]] = None,
                           known_view_2: Optional[Tuple[int, Pose]] = None) \
         -> Tuple[List[Pose], PointCloud]:
-    if known_view_1 is None or known_view_2 is None:
-        raise NotImplementedError()
 
     rgb_sequence = frameseq.read_rgb_f32(frame_sequence_path)
     frames_num = len(rgb_sequence)
@@ -74,6 +115,12 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
         camera_parameters,
         rgb_sequence[0].shape[0]
     )
+
+    if known_view_1 is None or known_view_2 is None:
+        known_view_1, known_view_2 = select_frames(rgb_sequence, corner_storage, intrinsic_mat)
+        if known_view_2[0] == -1:
+            print("Failed to find good starting frames")
+            exit(0)
 
     correspondences = build_correspondences(corner_storage[known_view_1[0]], corner_storage[known_view_2[0]])
     view_mat1 = pose_to_view_mat3x4(known_view_1[1])
@@ -108,10 +155,11 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                     intrinsic_mat, distCoeffs=None
                 )
 
-                print(f"Pass {pass_num}, frame {i}. Number of inliers == {len(inliers)}")
-
-                if len(inliers) == 0:
+                if inliers is None:
+                    print(f"Pass {pass_num}, frame {i}. No inliers!")
                     continue
+
+                print(f"Pass {pass_num}, frame {i}. Number of inliers == {len(inliers)}")
 
                 view_mats[i] = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
             except Exception:
